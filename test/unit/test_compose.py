@@ -1,11 +1,41 @@
 # tests/test_compose.py
 
+import shlex
 from pathlib import Path
 
 import pytest
 import yaml
 
 from ramalama.compose import Compose, genfile
+
+# Values a user can pass with --env or --runtime-args that YAML would read as
+# something other than the string they wrote if they were written out plain.
+AWKWARD_VALUES = [
+    "plain",
+    '{"enable_thinking": false}',
+    "Hello: world",
+    "ends with a colon:",
+    "a #b",
+    'say "hi"',
+    "it's",
+    "it's \"quoted\"",
+    "C:\\Users\\me\\model.gguf",
+    "C:\\new\\table",
+    "line1\nline2",
+    "tab\there",
+    " leading space",
+    "trailing space ",
+    "",
+    "unicode \u00e9 \U0001f600",
+    "next\x85line\u2028separator",
+    "delete\x7fcharacter",
+    "control\x9fcharacter",
+    "[1, 2]",
+    "- dash",
+    "*star",
+    "%percent",
+    "@at",
+]
 
 
 class Args:
@@ -438,3 +468,42 @@ def test_compose_no_tls_volumes_without_tls(monkeypatch):
     result = Compose("test", ("/a", "/b"), None, None, Args(), [], None).generate().content
 
     assert "/mnt/tls" not in result
+
+
+def _generate_compose_service(monkeypatch, args, exec_args) -> dict:
+    monkeypatch.setattr("os.path.exists", lambda path: False)
+    monkeypatch.setattr("ramalama.compose.get_accel_env_vars", lambda: {})
+    monkeypatch.setattr("ramalama.compose.version", lambda: "test")
+
+    content = Compose("test", ("/a", "/b"), None, None, args, exec_args, None).generate().content
+
+    return yaml.safe_load(content)["services"]["test"]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_compose_env_survives_yaml_quoting(monkeypatch, value):
+    """An --env value reaches Compose as written, whatever it holds."""
+    service = _generate_compose_service(monkeypatch, Args(env=[f"TEST_VAR={value}", "OTHER=1"]), ["llama-server"])
+
+    assert service["environment"] == [f"TEST_VAR={value}", "OTHER=1"]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_compose_command_survives_yaml_quoting(monkeypatch, value):
+    """The arguments of the server command reach Compose as written, whatever they hold."""
+    exec_args = ["llama-server", "--alias", value, "--port", "8080"]
+
+    service = _generate_compose_service(monkeypatch, Args(), exec_args)
+
+    assert service["command"] == shlex.join(exec_args)
+    assert shlex.split(service["command"]) == exec_args
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_compose_command_starting_with_value_survives_yaml_quoting(monkeypatch, value):
+    """The same holds when the value is the first word of the command."""
+    exec_args = [value, "--port", "8080"]
+
+    service = _generate_compose_service(monkeypatch, Args(), exec_args)
+
+    assert shlex.split(service["command"]) == exec_args

@@ -3,17 +3,32 @@ from __future__ import annotations
 # ramalama/generate/compose.py
 import json
 import os
+import re
 import shlex
 from typing import Optional
 
 # Live reference for checking global vars
 import ramalama.common
 from ramalama.common import RAG_DIR, container_cuda_visible_devices, get_accel_env_vars, get_gpu_devices
-from ramalama.file import PlainFile
+from ramalama.file import PlainFile, yaml_quote
 from ramalama.host_utils import format_bind_host_publish_prefix
 from ramalama.path_utils import normalize_host_path_for_container
 from ramalama.tls import tls_mounts
 from ramalama.version import version
+
+# A plain YAML scalar cannot hold a control character, start with an indicator
+# character, or end in whitespace or a colon, and it ends at a ": " or a " #".
+_UNSAFE_PLAIN_YAML = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]|\A[\s\-?:,\[\]{}#&*!|>'\"%@`]|\s\Z|:\Z|: | #")
+
+
+def _yaml_scalar(value: str) -> str:
+    """Serialize a string as a YAML scalar, written plain whenever that reads back unchanged.
+
+    A value holding a ": " is read as a mapping and one holding a " #" is cut
+    short at the comment, so the entry would reach Compose altered, or stop
+    the whole file parsing. Such a value is double quoted instead.
+    """
+    return yaml_quote(value) if _UNSAFE_PLAIN_YAML.search(value) else value
 
 
 def _gen_mount(src_path: str, dest_path: str, options: str = "") -> str:
@@ -174,7 +189,7 @@ class Compose:
 
         env_spec = "    environment:"
         for k, v in env_vars.items():
-            env_spec += f'\n      - {k}={v}'
+            env_spec += f"\n      - {_yaml_scalar(f'{k}={v}')}"
         return env_spec
 
     def _gen_gpu_deployment(self) -> str:
@@ -208,7 +223,7 @@ class Compose:
             return ""
         # shlex.join is perfect for creating a command string from a list
         cmd = shlex.join(self.exec_args)
-        return f"    command: {cmd}"
+        return f"    command: {_yaml_scalar(cmd)}"
 
     def generate(self) -> PlainFile:
         _version = version()

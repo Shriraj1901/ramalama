@@ -7,7 +7,7 @@ import re
 from typing import Optional, Tuple
 
 from ramalama.common import MNT_DIR, RAG_DIR, ContainerEntryPoint, check_nvidia, get_accel_env_vars, get_gpu_devices
-from ramalama.file import PlainFile
+from ramalama.file import PlainFile, yaml_quote
 from ramalama.path_utils import normalize_host_path_for_container
 from ramalama.tls import tls_mounts
 from ramalama.version import version
@@ -30,6 +30,24 @@ def _yaml_path(path: str) -> str:
         return path
 
     return json.dumps(path, ensure_ascii=False)
+
+
+# A single quoted YAML scalar cannot hold these, so they need the escapes of a double quoted one.
+_NEEDS_ESCAPES = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _yaml_flow_string(value: str) -> str:
+    """Serialize a string as a quoted YAML scalar for a flow sequence.
+
+    Single quoted where it can be, so the quote is the only character that
+    needs escaping. A backslash is an ordinary character there, which the
+    repr of the string used to double, and a value holding both kinds of
+    quote used to stop the whole file parsing.
+    """
+    if _NEEDS_ESCAPES.search(value):
+        return yaml_quote(value)
+
+    return "'" + value.replace("'", "''") + "'"
 
 
 class Kube:
@@ -246,7 +264,7 @@ class Kube:
         for k, v in sorted(env_vars.items()):
             env_spec += f"""
         - name: {k}
-          value: \"{v}\""""
+          value: {yaml_quote(v)}"""
 
         return env_spec
 
@@ -294,10 +312,10 @@ class Kube:
 """
         if "command" in container_args:
             content += f"""\
-        command: ["{container_args["command"]}"]
+        command: [{yaml_quote(container_args["command"])}]
 """
         content += f"""\
-        args: {container_args["args"]}
+        args: [{", ".join(_yaml_flow_string(str(arg)) for arg in container_args["args"])}]
 {container_args["env_string"]}"""
         content += f"""
 {self.__gen_security_context()}

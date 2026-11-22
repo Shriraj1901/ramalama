@@ -6,6 +6,35 @@ import yaml
 
 from ramalama.kube import Kube
 
+# Values a user can pass with --env or --runtime-args that YAML would read as
+# something other than the string they wrote if they were written out plain.
+AWKWARD_VALUES = [
+    "plain",
+    '{"enable_thinking": false}',
+    "Hello: world",
+    "ends with a colon:",
+    "a #b",
+    'say "hi"',
+    "it's",
+    "it's \"quoted\"",
+    "C:\\Users\\me\\model.gguf",
+    "C:\\new\\table",
+    "line1\nline2",
+    "tab\there",
+    " leading space",
+    "trailing space ",
+    "",
+    "unicode \u00e9 \U0001f600",
+    "next\x85line\u2028separator",
+    "delete\x7fcharacter",
+    "control\x9fcharacter",
+    "[1, 2]",
+    "- dash",
+    "*star",
+    "%percent",
+    "@at",
+]
+
 
 class Args:
     def __init__(self, name: str = "", rag: str = "", port: str = "", env: list = None, MODEL: Optional[str] = None):
@@ -424,3 +453,40 @@ def test_kube_no_tls_volumes_without_tls(monkeypatch):
     )
 
     assert "/mnt/tls" not in content
+
+
+def _generate_kube_container(monkeypatch, args, exec_args) -> dict:
+    monkeypatch.setattr("os.path.exists", lambda path: False)
+    monkeypatch.setattr("ramalama.kube.get_accel_env_vars", lambda: {})
+    monkeypatch.setattr("ramalama.kube.get_gpu_devices", lambda env_vars: {})
+    monkeypatch.setattr("ramalama.kube.version", lambda: "test-version")
+
+    content = Kube("test-model", ("/a", "/b"), None, None, args, exec_args, None, False).generate().content
+
+    return yaml.safe_load(content)["spec"]["template"]["spec"]["containers"][0]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_kube_env_survives_yaml_quoting(monkeypatch, value):
+    """An --env value reaches Kubernetes as written, whatever it holds."""
+    container = _generate_kube_container(monkeypatch, Args(env=[f"TEST_VAR={value}"]), ["llama-server"])
+
+    assert container["env"] == [{"name": "TEST_VAR", "value": value}]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_kube_args_survive_yaml_quoting(monkeypatch, value):
+    """The arguments of the server command reach Kubernetes as written, whatever they hold."""
+    container = _generate_kube_container(monkeypatch, Args(), ["llama-server", "--alias", value, "--port", "8080"])
+
+    assert container["command"] == ["llama-server"]
+    assert container["args"] == ["--alias", value, "--port", "8080"]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_kube_command_survives_yaml_quoting(monkeypatch, value):
+    """The same holds for the program to run."""
+    container = _generate_kube_container(monkeypatch, Args(), [value, "--port", "8080"])
+
+    assert container["command"] == [value]
+    assert container["args"] == ["--port", "8080"]

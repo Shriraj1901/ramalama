@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 # The following code is inspired from: https://github.com/ericcurtin/lm-pull/blob/main/lm-pull.py
+import json
 import os
 import platform
 
 # Import platform-specific locking mechanisms
 if platform.system() != "Windows":
     import fcntl
+
+# A YAML parser rejects DEL and the C1 controls, and reads the next line and
+# the line and paragraph separators as line breaks. A JSON string leaves all
+# of them as they are.
+_YAML_ESCAPES = {code: f"\\u{code:04x}" for code in (*range(0x7F, 0xA0), 0x2028, 0x2029)}
+
+
+def yaml_quote(value: str) -> str:
+    """Serialize a string as a YAML double quoted scalar.
+
+    A JSON string is a valid YAML double quoted scalar. It escapes the quote,
+    the backslash and the control characters that would otherwise end the
+    scalar early or be read as an escape. The few characters a YAML parser
+    does not accept as they are, or takes for line breaks, are escaped as well.
+    """
+    return json.dumps(value, ensure_ascii=False).translate(_YAML_ESCAPES)
 
 
 class File:
